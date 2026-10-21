@@ -145,15 +145,15 @@ func (c *checker) create(st *Step, tf *TargetFacts, outside outsideFn) {
 	s, src := st.Sel, st.Source
 	ref := s.Ref
 	add := c.add
-	if s.DropRecreate && c.tgt.IsPrd() { // R5
-		add(&ref, SevError, "%s: 운영(prd) 타깃에서는 DROP 후 재생성을 할 수 없습니다", ref)
+	if s.DropRecreate && !c.tgt.AllowDrop { // R5
+		add(&ref, SevError, "%s: 타깃 설정에 allow_drop: true가 없어 DROP 후 재생성을 사용할 수 없습니다", ref)
 	}
 	if tf.Table != nil {
 		if !s.DropRecreate { // R4
 			add(&ref, SevError, "%s: 타깃에 이미 테이블이 있습니다 (DROP 후 재생성을 선택해야 합니다)", ref)
 			return
 		}
-		if !c.tgt.IsPrd() { // R6
+		if c.tgt.AllowDrop { // R6
 			add(&ref, SevWarning, "%s: DROP 후 재생성하면 기존 GRANT, OWNER, 트리거, RLS 설정이 사라집니다", ref)
 			if len(tf.DependentViews) > 0 {
 				add(&ref, SevError, "%s: 이 테이블에 의존하는 뷰가 있어 DROP할 수 없습니다 (%s)", ref, refList(tf.DependentViews))

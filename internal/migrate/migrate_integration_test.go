@@ -62,10 +62,10 @@ func (e *env) sel(mode plan.Mode, drop bool, names ...string) []plan.Selection {
 	return out
 }
 
-func (e *env) build(t *testing.T, tgtEnv string, sel ...plan.Selection) *plan.Plan {
+func (e *env) build(t *testing.T, allowDrop bool, sel ...plan.Selection) *plan.Plan {
 	t.Helper()
-	sc := config.Conn{Name: "src", Env: "dev", Host: "localhost", Port: 55432, Database: "postgres", User: "postgres"}
-	tc := config.Conn{Name: "tgt", Env: tgtEnv, Host: "localhost", Port: 55433, Database: "postgres", User: "postgres"}
+	sc := config.Conn{Name: "src", Host: "localhost", Port: 55432, Database: "postgres", User: "postgres"}
+	tc := config.Conn{Name: "tgt", Host: "localhost", Port: 55433, Database: "postgres", User: "postgres", AllowDrop: allowDrop}
 	p, err := plan.Build(context.Background(), e.src, e.tgt, sc, tc, sel)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func (e *env) build(t *testing.T, tgtEnv string, sel ...plan.Selection) *plan.Pl
 
 func (e *env) mustPlan(t *testing.T, sel ...plan.Selection) *plan.Plan {
 	t.Helper()
-	p := e.build(t, "dev", sel...)
+	p := e.build(t, true, sel...)
 	if p.HasErrors() {
 		t.Fatalf("계획 오류: %+v", p.Issues)
 	}
@@ -232,15 +232,15 @@ func TestExecute_DropRecreate(t *testing.T) {
 	}
 }
 
-func TestExecute_RefusesDropRecreateOnPrd(t *testing.T) {
+func TestExecute_RefusesDropRecreateWithoutAllowDrop(t *testing.T) {
 	e := setup(t)
 	e.onSrc(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (1)`)
 	e.onTgt(t, `CREATE TABLE S.t (id int, old text)`, `INSERT INTO S.t VALUES (7, 'x')`)
 	p := e.mustPlan(t, e.sel(plan.ModeCreate, true, "t")...)
-	p.Target.Env = "PRD" // Check를 우회한 계획이라도 Execute가 거부해야 한다 (Ruling 10).
+	p.Target.AllowDrop = false // Check를 우회한 계획이라도 Execute가 거부해야 한다 (Ruling 10).
 	res, err := Execute(context.Background(), nil, nil, p, Options{}, runlog.Discard(), nil)
-	if err == nil {
-		t.Fatal("오류를 기대했습니다")
+	if err == nil || !strings.Contains(err.Error(), "allow_drop") {
+		t.Fatalf("allow_drop 거부 오류를 기대했습니다: %v", err)
 	}
 	if res == nil || res.Committed || !res.Refused {
 		t.Errorf("Result: %+v", res)
@@ -521,7 +521,7 @@ func TestExecute_RefusesPlanWithErrors(t *testing.T) {
 	e := setup(t)
 	e.onSrc(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (1)`)
 	e.onTgt(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (7)`)
-	p := e.build(t, "dev", e.sel(plan.ModeCreate, false, "t")...) // R4: 이미 있음
+	p := e.build(t, true, e.sel(plan.ModeCreate, false, "t")...) // R4: 이미 있음
 	if !p.HasErrors() {
 		t.Fatalf("계획 오류를 기대했습니다: %+v", p.Issues)
 	}

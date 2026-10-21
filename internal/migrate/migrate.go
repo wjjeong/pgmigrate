@@ -155,10 +155,10 @@ func Execute(ctx context.Context, src, tgt *pgx.Conn, p *plan.Plan, opt Options,
 	var refuse error
 	if p.HasErrors() {
 		refuse = errors.New("계획에 오류가 있어 실행할 수 없습니다")
-	} else if p.Target.IsPrd() {
+	} else if !p.Target.AllowDrop {
 		for _, s := range p.Steps {
 			if s.Sel.DropRecreate {
-				refuse = fmt.Errorf("%s: 운영(prd) 타깃에서는 DROP 후 재생성을 실행할 수 없습니다", s.Sel.Ref)
+				refuse = fmt.Errorf("%s: 타깃 설정에 allow_drop: true가 없어 DROP 후 재생성을 실행할 수 없습니다", s.Sel.Ref)
 				break
 			}
 		}

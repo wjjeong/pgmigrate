@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	srcConn  = config.Conn{Name: "s", Env: "dev", Host: "h1", Port: 5432, Database: "d"}
-	tgtConn  = config.Conn{Name: "t", Env: "dev", Host: "h2", Port: 5432, Database: "d"}
+	srcConn  = config.Conn{Name: "s", Host: "h1", Port: 5432, Database: "d"}
+	tgtConn  = config.Conn{Name: "t", Host: "h2", Port: 5432, Database: "d", AllowDrop: true}
 	fullPriv = catalog.Privileges{Select: true, Insert: true, Truncate: true, Owner: true}
 )
 
@@ -108,12 +108,29 @@ func TestCheck_R4(t *testing.T) {
 }
 
 func TestCheck_R5(t *testing.T) {
-	prd := tgtConn
-	prd.Env = "prd"
-	p := Check(srcConn, prd, []Selection{{Ref: tref("a"), Mode: ModeCreate, DropRecreate: true}}, facts("a"))
-	has(t, p, SevError, "prd")
-	p = Check(srcConn, prd, []Selection{{Ref: tref("a"), Mode: ModeCreate, DropRecreate: true}}, createFacts())
-	has(t, p, SevError, "prd")
+	s := []Selection{{Ref: tref("a"), Mode: ModeCreate, DropRecreate: true}}
+	noDrop := tgtConn
+	noDrop.AllowDrop = false
+	for name, f := range map[string]func() *Facts{
+		"target present": func() *Facts { return facts("a") },
+		"target absent":  createFacts,
+	} {
+		t.Run(name, func(t *testing.T) {
+			has(t, Check(srcConn, noDrop, s, f()), SevError, "allow_drop")
+			if p := Check(srcConn, tgtConn, s, f()); hasMsg(p, "allow_drop") {
+				t.Errorf("allow_drop: true인데 R5 오류: %+v", p.Issues)
+			}
+		})
+	}
+}
+
+func hasMsg(p *Plan, sub string) bool {
+	for _, i := range p.Issues {
+		if strings.Contains(i.Message, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCheck_R6(t *testing.T) {

@@ -20,6 +20,8 @@ type Conn struct {
 	Database string `yaml:"database"`
 	User     string `yaml:"user"`
 	SSLMode  string `yaml:"sslmode"` // 빈 값이면 "prefer"
+	// AllowDrop은 타깃에서만 의미가 있다. true일 때만 DROP 후 재생성을 허용한다.
+	AllowDrop bool `yaml:"allow_drop"`
 }
 
 type file struct {
