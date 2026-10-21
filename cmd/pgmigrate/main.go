@@ -62,7 +62,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "예시: %s 에 pgmigrate.example.yaml을 참고해 pgmigrate.yaml을 만드세요.\n", filepath.Join(dir, "pgmigrate.yaml"))
 		return 2
 	}
-	conns, err := config.Load(path)
+	cfg, err := config.Load(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "설정 파일 오류:", err)
 		return 2
@@ -70,7 +70,7 @@ func run() int {
 
 	b := app.NewPG(filepath.Join(dir, "logs"), migrate.Options{LockTimeout: *lockTimeout})
 	defer b.Close()
-	if _, err := tea.NewProgram(tui.New(b, conns), tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(tui.New(b, cfg), tea.WithAltScreen()).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "실행 오류:", err)
 		return 1
 	}

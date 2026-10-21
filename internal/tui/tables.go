@@ -137,8 +137,8 @@ func (m *Model) updateTables(msg tea.Msg) tea.Cmd {
 	case "d":
 		switch {
 		case it == nil:
-		case m.tgt.IsPrd():
-			s.message = "타깃이 prd이므로 DropRecreate를 쓸 수 없습니다"
+		case !m.tgt.AllowDrop:
+			s.message = "타깃 설정에 allow_drop: true가 없어 DropRecreate를 쓸 수 없습니다"
 		case it.mode != plan.ModeCreate:
 			s.message = "DropRecreate는 create 모드에서만 쓸 수 있습니다"
 		default:

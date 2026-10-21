@@ -16,60 +16,114 @@ func writeYAML(t *testing.T, s string) string {
 	return p
 }
 
+const validYAML = `source:
+  name: dev
+  host: dev-db
+  database: app
+  user: migr
+target:
+  name: qa
+  host: qa-db
+  port: 6543
+  database: app
+  user: migr
+  sslmode: require
+  allow_drop: true
+`
+
 func TestLoad(t *testing.T) {
-	t.Run("defaults", func(t *testing.T) {
-		p := writeYAML(t, "connections:\n  - {name: a, env: dev, host: h, database: d, user: u}\n")
-		cs, err := Load(p)
+	t.Run("source and target", func(t *testing.T) {
+		cfg, err := Load(writeYAML(t, validYAML))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(cs) != 1 || cs[0].Port != 5432 || cs[0].SSLMode != "prefer" {
-			t.Fatalf("unexpected: %+v", cs)
+		want := Config{
+			Source: Conn{Name: "dev", Host: "dev-db", Port: 5432, Database: "app", User: "migr", SSLMode: "prefer"},
+			Target: Conn{Name: "qa", Host: "qa-db", Port: 6543, Database: "app", User: "migr", SSLMode: "require", AllowDrop: true},
+		}
+		if cfg != want {
+			t.Fatalf("got %+v\nwant %+v", cfg, want)
 		}
 	})
-	t.Run("explicit values kept", func(t *testing.T) {
-		p := writeYAML(t, "connections:\n  - {name: a, host: h, port: 6543, database: d, user: u, sslmode: require}\n")
-		cs, err := Load(p)
+	t.Run("default names", func(t *testing.T) {
+		cfg, err := Load(writeYAML(t, "source: {host: h, database: d, user: u}\ntarget: {host: h2, database: d, user: u}\n"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if cs[0].Port != 6543 || cs[0].SSLMode != "require" {
-			t.Fatalf("unexpected: %+v", cs[0])
+		if cfg.Source.Name != "source" || cfg.Target.Name != "target" || cfg.Target.AllowDrop {
+			t.Fatalf("unexpected: %+v", cfg)
 		}
 	})
-	t.Run("duplicate name", func(t *testing.T) {
-		p := writeYAML(t, "connections:\n  - {name: a, host: h, database: d, user: u}\n  - {name: a, host: h2, database: d, user: u}\n")
-		if _, err := Load(p); err == nil {
-			t.Fatal("want error")
+	t.Run("allow_drop on source ignored", func(t *testing.T) {
+		cfg, err := Load(writeYAML(t, "source: {host: h, database: d, user: u, allow_drop: true}\ntarget: {host: h2, database: d, user: u}\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Source.AllowDrop {
+			t.Fatal("source allow_drop must be ignored")
 		}
 	})
-	for _, f := range []string{"name", "host", "database", "user"} {
-		f := f
-		t.Run("missing "+f, func(t *testing.T) {
-			m := map[string]string{"name": "a", "host": "h", "database": "d", "user": "u"}
-			delete(m, f)
-			var parts []string
-			for k, v := range m {
-				parts = append(parts, k+": "+v)
+	for _, sec := range []string{"source", "target"} {
+		sec := sec
+		t.Run("missing section "+sec, func(t *testing.T) {
+			y := "source: {host: h, database: d, user: u}\ntarget: {host: h2, database: d, user: u}\n"
+			lines := strings.Split(y, "\n")
+			if sec == "source" {
+				y = lines[1] + "\n"
+			} else {
+				y = lines[0] + "\n"
 			}
-			p := writeYAML(t, "connections:\n  - {"+strings.Join(parts, ", ")+"}\n")
-			if _, err := Load(p); err == nil {
-				t.Fatal("want error")
+			_, err := Load(writeYAML(t, y))
+			if err == nil || !strings.Contains(err.Error(), sec) {
+				t.Fatalf("want error naming %s: %v", sec, err)
 			}
 		})
-	}
-	t.Run("fields trimmed", func(t *testing.T) {
-		p := writeYAML(t, "connections:\n  - {name: ' a ', env: ' prd ', host: ' h ', database: ' d ', user: ' u '}\n  - {name: 'a  ', host: h, database: d, user: u}\n")
-		if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "중복") {
-			t.Fatalf("trimmed duplicate name must be refused: %v", err)
+		for _, f := range []string{"host", "database", "user"} {
+			f := f
+			t.Run(sec+" missing "+f, func(t *testing.T) {
+				m := map[string]string{"host": "h", "database": "d", "user": "u"}
+				m[f] = "'  '"
+				var parts []string
+				for k, v := range m {
+					parts = append(parts, k+": "+v)
+				}
+				body := "{" + strings.Join(parts, ", ") + "}"
+				ok := "{host: h9, database: d, user: u}"
+				y := "source: " + ok + "\ntarget: " + body + "\n"
+				if sec == "source" {
+					y = "source: " + body + "\ntarget: " + ok + "\n"
+				}
+				_, err := Load(writeYAML(t, y))
+				if err == nil || !strings.Contains(err.Error(), sec) || !strings.Contains(err.Error(), f) {
+					t.Fatalf("want error naming %s/%s: %v", sec, f, err)
+				}
+			})
 		}
-		p = writeYAML(t, "connections:\n  - {name: ' a ', env: ' prd ', host: ' h ', database: ' d ', user: ' u '}\n")
-		cs, err := Load(p)
+	}
+	t.Run("old connections format", func(t *testing.T) {
+		_, err := Load(writeYAML(t, "connections:\n  - {name: a, env: dev, host: h, database: d, user: u}\n"))
+		if err == nil || !strings.Contains(err.Error(), "source") || !strings.Contains(err.Error(), "target") {
+			t.Fatalf("want error suggesting source/target: %v", err)
+		}
+	})
+	t.Run("unknown field env", func(t *testing.T) {
+		_, err := Load(writeYAML(t, "source: {host: h, database: d, user: u, env: dev}\ntarget: {host: h2, database: d, user: u}\n"))
+		if err == nil {
+			t.Fatal("want error for unknown field")
+		}
+	})
+	t.Run("fields trimmed", func(t *testing.T) {
+		cfg, err := Load(writeYAML(t, "source: {name: ' a ', host: ' h ', database: ' d ', user: ' u ', sslmode: ' disable '}\ntarget: {host: h2, database: d, user: u}\n"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c := cs[0]; c.Name != "a" || c.Env != "prd" || c.Host != "h" || c.Database != "d" || c.User != "u" {
+		if c := cfg.Source; c.Name != "a" || c.Host != "h" || c.Database != "d" || c.User != "u" || c.SSLMode != "disable" {
 			t.Fatalf("not trimmed: %+v", c)
+		}
+	})
+	t.Run("empty file", func(t *testing.T) {
+		if _, err := Load(writeYAML(t, "")); err == nil {
+			t.Fatal("want error")
 		}
 	})
 	t.Run("missing file", func(t *testing.T) {
@@ -144,18 +198,5 @@ func TestSameDatabase(t *testing.T) {
 	}
 	if SameDatabase(a, Conn{Host: "Host", Port: 5432, Database: "e"}) {
 		t.Fatal("db")
-	}
-}
-
-func TestIsPrd(t *testing.T) {
-	for _, env := range []string{"prd", "PRD", "prod", "Prod", "production", "PRODUCTION", " prd ", "\tprod\n"} {
-		if !(Conn{Env: env}).IsPrd() {
-			t.Errorf("IsPrd(%q) = false", env)
-		}
-	}
-	for _, env := range []string{"", "dev", "qa", "stg", "preprod", "prd2", "pr d"} {
-		if (Conn{Env: env}).IsPrd() {
-			t.Errorf("IsPrd(%q) = true", env)
-		}
 	}
 }

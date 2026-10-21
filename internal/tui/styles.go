@@ -28,25 +28,13 @@ var (
 	bannerStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(colorRed).Padding(0, 1)
 )
 
-// envStyle colors an environment label: prd red, qa yellow, anything else green.
-func envStyle(env string) lipgloss.Style {
-	if (config.Conn{Env: env}).IsPrd() {
-		return lipgloss.NewStyle().Bold(true).Foreground(colorRed)
-	}
-	switch strings.ToLower(strings.TrimSpace(env)) {
-	case "qa":
-		return lipgloss.NewStyle().Foreground(colorYellow)
-	}
-	return lipgloss.NewStyle().Foreground(colorGreen)
-}
-
-// connLabel renders "name [env] user@host:port/db" with the env colored.
+// connLabel renders "name user@host:port/db", marking a target that allows
+// DROP 후 재생성 with a red [allow_drop].
 func connLabel(c config.Conn, width int) string {
-	env := c.Env
-	if env == "" {
-		env = "-"
+	rest := truncate(c.Name, 20)
+	if c.AllowDrop {
+		rest += " " + errStyle.Render("[allow_drop]")
 	}
-	rest := truncate(c.Name, 20) + " " + envStyle(c.Env).Render("["+env+"]")
 	detail := " " + c.User + "@" + c.Host + ":" + strconv.Itoa(c.Port) + "/" + c.Database
 	return rest + truncate(detail, width-lipgloss.Width(rest))
 }

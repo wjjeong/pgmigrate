@@ -191,11 +191,12 @@ var sevName = map[plan.Severity]string{plan.SevInfo: "정보", plan.SevWarning: 
 // writeHeader logs both endpoints (never passwords), per-table modes and issues.
 func writeHeader(lf *runlog.File, p *plan.Plan) {
 	for _, e := range []struct {
-		role string
-		c    config.Conn
-	}{{"소스", p.Source}, {"타깃", p.Target}} {
-		lf.Printf("%s: name=%s env=%s host=%s port=%d database=%s user=%s",
-			e.role, e.c.Name, e.c.Env, e.c.Host, e.c.Port, e.c.Database, e.c.User)
+		role  string
+		c     config.Conn
+		extra string
+	}{{"소스", p.Source, ""}, {"타깃", p.Target, fmt.Sprintf(" allow_drop=%t", p.Target.AllowDrop)}} {
+		lf.Printf("%s: name=%s host=%s port=%d database=%s user=%s%s",
+			e.role, e.c.Name, e.c.Host, e.c.Port, e.c.Database, e.c.User, e.extra)
 	}
 	for _, s := range p.Steps {
 		lf.Printf("테이블 %s: 모드=%s DROP후재생성=%t", s.Sel.Ref, s.Sel.Mode, s.Sel.DropRecreate)

@@ -28,8 +28,8 @@ const (
 // Model is the root bubbletea model. Each screen keeps its state in its own
 // struct and its update/view code in its own file.
 type Model struct {
-	b     app.Backend
-	conns []config.Conn
+	b   app.Backend
+	cfg config.Config
 
 	screen        screen
 	width, height int
@@ -45,9 +45,11 @@ type Model struct {
 	result  resultState
 }
 
-// New returns the root model for the given backend and configured connections.
-func New(b app.Backend, conns []config.Conn) tea.Model {
-	return &Model{b: b, conns: conns, width: 80, height: 24}
+// New returns the root model for the given backend and the configured
+// source/target connections.
+func New(b app.Backend, cfg config.Config) tea.Model {
+	return &Model{b: b, cfg: cfg, src: cfg.Source, tgt: cfg.Target,
+		connect: newConnectState(), width: 80, height: 24}
 }
 
 func (m *Model) Init() tea.Cmd { return nil }

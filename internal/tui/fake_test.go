@@ -24,6 +24,9 @@ type fakeBackend struct {
 	blockExec bool
 
 	connectCalls int
+	connSrc      config.Conn
+	connTgt      config.Conn
+	connPw       [2]string
 	planCalls    [][]plan.Selection
 	execCalls    int
 	execCtx      context.Context
@@ -33,6 +36,7 @@ func (f *fakeBackend) Connect(ctx context.Context, src, tgt config.Conn, srcPw, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.connectCalls++
+	f.connSrc, f.connTgt, f.connPw = src, tgt, [2]string{srcPw, tgtPw}
 	return nil
 }
 

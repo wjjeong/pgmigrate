@@ -18,8 +18,8 @@ import (
 const testPass = "postgres" // docker 이미지는 TCP 접속에 비밀번호 인증을 강제한다
 
 func conns() (config.Conn, config.Conn) {
-	return config.Conn{Name: "src", Env: "dev", Host: "localhost", Port: 55432, Database: "postgres", User: "postgres", SSLMode: "disable"},
-		config.Conn{Name: "tgt", Env: "dev", Host: "localhost", Port: 55433, Database: "postgres", User: "postgres", SSLMode: "disable"}
+	return config.Conn{Name: "src", Host: "localhost", Port: 55432, Database: "postgres", User: "postgres", SSLMode: "disable"},
+		config.Conn{Name: "tgt", Host: "localhost", Port: 55433, Database: "postgres", User: "postgres", SSLMode: "disable"}
 }
 
 func TestBackend_EndToEnd(t *testing.T) {

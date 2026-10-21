@@ -40,7 +40,7 @@ func (m *Model) updatePreview(msg tea.Msg) tea.Cmd {
 		if m.plan.HasErrors() {
 			return nil // 화면 하단에 msgErrorsBlock이 항상 보인다
 		}
-		m.confirm = newConfirmState(m.plan)
+		m.confirm = newConfirmState()
 		m.screen = screenConfirm
 		return m.confirm.focusCmd()
 	}

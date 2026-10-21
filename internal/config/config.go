@@ -1,9 +1,12 @@
-// Package config loads connection definitions and builds pgx configs.
+// Package config loads the source/target connection definitions and builds pgx configs.
 // Passwords are never stored in the config file.
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +15,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Conn is one PostgreSQL endpoint.
 type Conn struct {
-	Name     string `yaml:"name"`
-	Env      string `yaml:"env"` // "dev" | "qa" | "prd" | 자유 문자열
+	Name     string `yaml:"name"` // 화면 표시용. 비우면 "source"/"target"
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"` // 0이면 5432
 	Database string `yaml:"database"`
@@ -24,48 +27,56 @@ type Conn struct {
 	AllowDrop bool `yaml:"allow_drop"`
 }
 
-type file struct {
-	Connections []Conn `yaml:"connections"`
+// Config holds exactly one source and one target connection.
+type Config struct {
+	Source Conn `yaml:"source"`
+	Target Conn `yaml:"target"`
 }
 
-// IsPrd reports whether c is a production connection. prd, prod and
-// production are accepted (case-insensitive, surrounding spaces ignored) so a
-// different spelling never disables the production safeguards.
-func (c Conn) IsPrd() bool {
-	switch strings.ToLower(strings.TrimSpace(c.Env)) {
-	case "prd", "prod", "production":
-		return true
-	}
-	return false
-}
+const formatHint = "설정 파일은 source:와 target: 두 섹션으로 작성합니다 (pgmigrate.example.yaml 참고)"
 
-// Load reads the YAML file at path and validates the connections.
-func Load(path string) ([]Conn, error) {
+// Load reads the YAML file at path and validates both connections.
+// Unknown keys (e.g. the old connections:/env: format) are rejected.
+func Load(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("설정 파일을 읽을 수 없습니다 (%s): %w", path, err)
+		return Config{}, fmt.Errorf("설정 파일을 읽을 수 없습니다 (%s): %w", path, err)
 	}
-	var f file
-	if err := yaml.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("설정 파일 형식이 올바르지 않습니다 (%s): %w", path, err)
+	var top map[string]yaml.Node
+	if err := yaml.Unmarshal(data, &top); err != nil {
+		return Config{}, fmt.Errorf("설정 파일 형식이 올바르지 않습니다 (%s): %w", path, err)
 	}
-	seen := map[string]bool{}
-	for i := range f.Connections {
-		c := &f.Connections[i]
-		for _, p := range []*string{&c.Name, &c.Env, &c.Host, &c.Database, &c.User} {
+	if _, old := top["connections"]; old {
+		return Config{}, fmt.Errorf("설정 파일이 예전 형식(connections:)입니다 (%s). %s", path, formatHint)
+	}
+	var cfg Config
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		return Config{}, fmt.Errorf("설정 파일 형식이 올바르지 않습니다 (%s): %w. %s", path, err, formatHint)
+	}
+	for _, sec := range []struct {
+		key  string
+		c    *Conn
+		node bool
+	}{{"source", &cfg.Source, top["source"].Kind != 0}, {"target", &cfg.Target, top["target"].Kind != 0}} {
+		if !sec.node {
+			return Config{}, fmt.Errorf("설정 파일에 %s 섹션이 없습니다. %s", sec.key, formatHint)
+		}
+		c := sec.c
+		for _, p := range []*string{&c.Name, &c.Host, &c.Database, &c.User, &c.SSLMode} {
 			*p = strings.TrimSpace(*p)
 		}
 		for _, r := range []struct{ label, v string }{
-			{"name", c.Name}, {"host", c.Host}, {"database", c.Database}, {"user", c.User},
+			{"host", c.Host}, {"database", c.Database}, {"user", c.User},
 		} {
 			if r.v == "" {
-				return nil, fmt.Errorf("연결 #%d: 필수 항목 %q 이(가) 비어 있습니다", i+1, r.label)
+				return Config{}, fmt.Errorf("%s: 필수 항목 %q 이(가) 비어 있습니다", sec.key, r.label)
 			}
 		}
-		if seen[c.Name] {
-			return nil, fmt.Errorf("연결 이름이 중복되었습니다: %q", c.Name)
+		if c.Name == "" {
+			c.Name = sec.key
 		}
-		seen[c.Name] = true
 		if c.Port == 0 {
 			c.Port = 5432
 		}
@@ -73,7 +84,8 @@ func Load(path string) ([]Conn, error) {
 			c.SSLMode = "prefer"
 		}
 	}
-	return f.Connections, nil
+	cfg.Source.AllowDrop = false // 소스에서는 의미가 없으므로 무시한다
+	return cfg, nil
 }
 
 // ResolvePath prefers exeDir/pgmigrate.yaml, else appData/pgmigrate/pgmigrate.yaml.
