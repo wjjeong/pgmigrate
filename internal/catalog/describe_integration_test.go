@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
+	"pgmigrate/internal/config"
 	"pgmigrate/internal/testutil"
 )
 
@@ -178,5 +181,89 @@ func TestDescribe_NotFound(t *testing.T) {
 	_, err := Describe(context.Background(), q, TableRef{s, "nope"})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ErrNotFound 기대: %v", err)
+	}
+}
+
+// TestDescribe_QualifiedUnderRoleSearchPath: 역할에 search_path가 걸려 있어도
+// config.PgxConfig로 연 세션은 search_path=pg_catalog이므로 기본값·FK·타입이
+// 스키마까지 붙어서 나와야 한다 (F3).
+func TestDescribe_QualifiedUnderRoleSearchPath(t *testing.T) {
+	admin := testutil.Source(t)
+	s := testutil.Schema(t, admin)
+	role := "r_" + s
+	for _, sql := range []string{
+		fmt.Sprintf(`CREATE TYPE %s.mood AS ENUM ('ok')`, s),
+		fmt.Sprintf(`CREATE TABLE %s.parent (id int PRIMARY KEY)`, s),
+		fmt.Sprintf(`CREATE TABLE %s.child (id serial PRIMARY KEY, pid int REFERENCES %s.parent(id), st %s.mood)`, s, s, s),
+		fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD 'pw'`, role),
+		fmt.Sprintf(`ALTER ROLE %s SET search_path = %s, public`, role, s),
+		fmt.Sprintf(`GRANT USAGE ON SCHEMA %s TO %s`, s, role),
+		fmt.Sprintf(`GRANT SELECT ON ALL SEQUENCES IN SCHEMA %s TO %s`, s, role),
+	} {
+		testutil.MustExec(t, admin, sql)
+	}
+	t.Cleanup(func() {
+		// DROP OWNED BY는 이 역할에 준 권한을 회수한다 (스키마 삭제보다 먼저 실행된다).
+		_, _ = admin.Exec(context.Background(), "DROP OWNED BY "+role)
+		_, _ = admin.Exec(context.Background(), "DROP ROLE IF EXISTS "+role)
+	})
+
+	c := config.Conn{Name: "sp", Host: "localhost", Port: 55432, Database: "postgres", User: role, SSLMode: "disable"}
+	describeChild := func(pinned bool) (*Table, string) {
+		t.Helper()
+		cfg, err := c.PgxConfig("pw")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !pinned {
+			delete(cfg.RuntimeParams, "search_path") // 대조군: 역할 설정이 그대로 적용된다
+		}
+		conn, err := pgx.ConnectConfig(context.Background(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(context.Background())
+		var sp string
+		if err := conn.QueryRow(context.Background(), "SHOW search_path").Scan(&sp); err != nil {
+			t.Fatal(err)
+		}
+		return mustDescribe(t, conn, s, "child"), sp
+	}
+	check := func(tb *Table) (def, fk, typ string) {
+		for _, col := range tb.Columns {
+			switch col.Name {
+			case "id":
+				def = col.Default
+			case "st":
+				typ = col.Type
+			}
+		}
+		for _, con := range tb.Constraints {
+			if con.Type == 'f' {
+				fk = con.Def
+			}
+		}
+		return
+	}
+
+	// 대조군: 고정하지 않으면 이름이 스키마 없이 나온다 (테스트가 실제로 문제를 재현하는지 확인).
+	tb, sp := describeChild(false)
+	if def, fk, typ := check(tb); strings.Contains(def, s+".") || strings.Contains(fk, s+".") || strings.Contains(typ, s+".") {
+		t.Fatalf("대조군이 이미 스키마를 붙였습니다 (search_path=%s): %q %q %q", sp, def, fk, typ)
+	}
+
+	tb, sp = describeChild(true)
+	if sp != "pg_catalog" {
+		t.Fatalf("search_path = %q, want pg_catalog", sp)
+	}
+	def, fk, typ := check(tb)
+	if want := "nextval('" + s + ".child_id_seq'::regclass)"; def != want {
+		t.Errorf("id default = %q, want %q", def, want)
+	}
+	if want := "REFERENCES " + s + ".parent(id)"; !strings.Contains(fk, want) {
+		t.Errorf("FK def = %q, want contains %q", fk, want)
+	}
+	if want := s + ".mood"; typ != want {
+		t.Errorf("st type = %q, want %q", typ, want)
 	}
 }

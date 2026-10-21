@@ -30,9 +30,10 @@ var (
 
 // envStyle colors an environment label: prd red, qa yellow, anything else green.
 func envStyle(env string) lipgloss.Style {
-	switch strings.ToLower(env) {
-	case "prd":
+	if (config.Conn{Env: env}).IsPrd() {
 		return lipgloss.NewStyle().Bold(true).Foreground(colorRed)
+	}
+	switch strings.ToLower(strings.TrimSpace(env)) {
 	case "qa":
 		return lipgloss.NewStyle().Foreground(colorYellow)
 	}

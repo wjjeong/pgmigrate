@@ -58,6 +58,20 @@ func TestLoad(t *testing.T) {
 			}
 		})
 	}
+	t.Run("fields trimmed", func(t *testing.T) {
+		p := writeYAML(t, "connections:\n  - {name: ' a ', env: ' prd ', host: ' h ', database: ' d ', user: ' u '}\n  - {name: 'a  ', host: h, database: d, user: u}\n")
+		if _, err := Load(p); err == nil || !strings.Contains(err.Error(), "중복") {
+			t.Fatalf("trimmed duplicate name must be refused: %v", err)
+		}
+		p = writeYAML(t, "connections:\n  - {name: ' a ', env: ' prd ', host: ' h ', database: ' d ', user: ' u '}\n")
+		cs, err := Load(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c := cs[0]; c.Name != "a" || c.Env != "prd" || c.Host != "h" || c.Database != "d" || c.User != "u" {
+			t.Fatalf("not trimmed: %+v", c)
+		}
+	})
 	t.Run("missing file", func(t *testing.T) {
 		if _, err := Load(filepath.Join(t.TempDir(), "nope.yaml")); err == nil {
 			t.Fatal("want error")
@@ -95,6 +109,13 @@ func TestPgxConfig(t *testing.T) {
 	if cfg.Password != "pw" {
 		t.Fatalf("got %q", cfg.Password)
 	}
+	for k, want := range map[string]string{
+		"search_path": "pg_catalog", "DateStyle": "ISO", "IntervalStyle": "postgres", "client_encoding": "UTF8",
+	} {
+		if got := cfg.RuntimeParams[k]; got != want {
+			t.Errorf("RuntimeParams[%s] = %q, want %q", k, got, want)
+		}
+	}
 	weird := c
 	weird.Host = `my host'x\y`
 	weird.Database = `d'b`
@@ -127,7 +148,14 @@ func TestSameDatabase(t *testing.T) {
 }
 
 func TestIsPrd(t *testing.T) {
-	if !(Conn{Env: "PRD"}).IsPrd() || (Conn{Env: "dev"}).IsPrd() {
-		t.Fatal("IsPrd")
+	for _, env := range []string{"prd", "PRD", "prod", "Prod", "production", "PRODUCTION", " prd ", "\tprod\n"} {
+		if !(Conn{Env: env}).IsPrd() {
+			t.Errorf("IsPrd(%q) = false", env)
+		}
+	}
+	for _, env := range []string{"", "dev", "qa", "stg", "preprod", "prd2", "pr d"} {
+		if (Conn{Env: env}).IsPrd() {
+			t.Errorf("IsPrd(%q) = true", env)
+		}
 	}
 }

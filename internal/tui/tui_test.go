@@ -364,3 +364,14 @@ func TestResult_ShowsError(t *testing.T) {
 	h.mustContain("복사 실패")
 	h.mustContain("커밋되지 않음")
 }
+
+func TestEnvStyle_PrdAliasesRed(t *testing.T) {
+	for _, env := range []string{"prd", "PROD", "production"} {
+		if got := envStyle(env).GetForeground(); got != colorRed {
+			t.Errorf("envStyle(%q) foreground = %v, want red", env, got)
+		}
+	}
+	if got := envStyle("dev").GetForeground(); got == colorRed {
+		t.Error("dev must not be red")
+	}
+}

@@ -26,7 +26,16 @@ type file struct {
 	Connections []Conn `yaml:"connections"`
 }
 
-func (c Conn) IsPrd() bool { return strings.EqualFold(c.Env, "prd") }
+// IsPrd reports whether c is a production connection. prd, prod and
+// production are accepted (case-insensitive, surrounding spaces ignored) so a
+// different spelling never disables the production safeguards.
+func (c Conn) IsPrd() bool {
+	switch strings.ToLower(strings.TrimSpace(c.Env)) {
+	case "prd", "prod", "production":
+		return true
+	}
+	return false
+}
 
 // Load reads the YAML file at path and validates the connections.
 func Load(path string) ([]Conn, error) {
@@ -41,10 +50,13 @@ func Load(path string) ([]Conn, error) {
 	seen := map[string]bool{}
 	for i := range f.Connections {
 		c := &f.Connections[i]
+		for _, p := range []*string{&c.Name, &c.Env, &c.Host, &c.Database, &c.User} {
+			*p = strings.TrimSpace(*p)
+		}
 		for _, r := range []struct{ label, v string }{
 			{"name", c.Name}, {"host", c.Host}, {"database", c.Database}, {"user", c.User},
 		} {
-			if strings.TrimSpace(r.v) == "" {
+			if r.v == "" {
 				return nil, fmt.Errorf("연결 #%d: 필수 항목 %q 이(가) 비어 있습니다", i+1, r.label)
 			}
 		}
@@ -96,6 +108,17 @@ func (c Conn) PgxConfig(password string) (*pgx.ConnConfig, error) {
 	}
 	if password != "" {
 		cfg.Password = password
+	}
+	// 카탈로그 함수(pg_get_expr, format_type 등)의 이름 표기와 COPY 텍스트 형식이
+	// 서버/역할 설정에 따라 달라지지 않도록 세션 설정을 고정한다. search_path가
+	// pg_catalog뿐이므로 사용자 객체는 항상 스키마까지 붙어서 출력된다.
+	for k, v := range map[string]string{
+		"search_path":     "pg_catalog",
+		"DateStyle":       "ISO",
+		"IntervalStyle":   "postgres",
+		"client_encoding": "UTF8",
+	} {
+		cfg.RuntimeParams[k] = v
 	}
 	return cfg, nil
 }
