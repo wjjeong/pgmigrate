@@ -28,29 +28,33 @@ PostgreSQL 18.4 데이터베이스 사이에서 소규모 테이블을 옮기는
 
 예시 (`pgmigrate.example.yaml` 참고):
 
+소스 하나와 타깃 하나만 적습니다. `name`, `port`, `sslmode`는 생략할 수 있습니다 (기본값 `source`/`target`, `5432`, `prefer`).
+
 ```yaml
-connections:
-  - name: local-dev
-    env: dev          # dev / qa / prd 등. prd(prod, production도 같음)는 추가 안전 장치가 적용됩니다
-    host: localhost
-    port: 5432
-    database: appdb
-    user: app
-    sslmode: prefer
-  - name: prd-server
-    env: prd
-    host: prd-db.example.com
-    port: 5432
-    database: appdb
-    user: app_readonly
-    sslmode: require
+source:
+  name: dev
+  host: localhost
+  port: 5432
+  database: appdb
+  user: app
+  sslmode: prefer
+target:
+  name: qa
+  host: qa-db.example.com
+  port: 5432
+  database: appdb
+  user: app
+  sslmode: require
+  allow_drop: false   # true일 때만 DROP 후 재생성을 쓸 수 있습니다 (타깃에서만 의미가 있음)
 ```
+
+예전 `connections:` 목록 형식이나 `env:` 같은 알 수 없는 항목은 오류로 거부됩니다.
 
 ## 비밀번호
 
 설정 파일에는 비밀번호를 쓰지 않으며, 로그에도 기록하지 않습니다.
 
-- 연결 화면에서 입력합니다.
+- 연결 화면에서 소스/타깃 비밀번호를 입력합니다.
 - 비워 두면 libpq와 같은 방식으로 `PGPASSWORD` 환경 변수, 그다음 `%APPDATA%\postgresql\pgpass.conf`를 사용합니다.
 
 ## 모드와 안전 장치
@@ -67,8 +71,9 @@ connections:
 - 커밋 중 연결이 끊기는 등으로 커밋 여부를 알 수 없으면 결과 화면과 로그에 "커밋 여부 불명확"으로 표시됩니다. 이때는 다시 실행하기 전에 타깃 DB를 직접 확인하세요 (특히 append).
 - 실행 전에 미리보기에서 실행 순서, 행 수, 검사 결과(경고/오류), DDL(`v`)을 확인합니다. 오류가 있으면 진행할 수 없습니다.
 - 복사 후 행 수를 검증하고, 맞지 않으면 롤백합니다.
-- 소스와 같은 데이터베이스는 타깃으로 고를 수 없습니다. 연결 후 서버 식별자(system_identifier), 데이터베이스 이름, 서버 시작 시각을 비교하므로 `localhost`/`127.0.0.1`처럼 호스트를 달리 써도 막힙니다.
-- 타깃의 `env`가 `prd`, `prod`, `production`(대소문자 무관) 중 하나이면 실행 전에 데이터베이스 이름을 정확히 입력해야 하며, DropRecreate는 사용할 수 없습니다.
+- 소스와 타깃이 같은 데이터베이스이면 연결하지 않습니다. 연결 후에도 서버 식별자(system_identifier), 데이터베이스 이름, 서버 시작 시각을 비교하므로 `localhost`/`127.0.0.1`처럼 호스트를 달리 써도 막힙니다.
+- 타깃은 항상 보호됩니다. 실행 전 확인 화면에서 타깃 데이터베이스 이름을 정확히(대소문자 구분) 입력해야 실행되며, 삭제될 테이블(TRUNCATE / DROP 후 재생성)이 나열됩니다.
+- DropRecreate(DROP 후 재생성)는 타깃 설정에 `allow_drop: true`가 있을 때만 켤 수 있습니다. 없으면 `d` 키가 거부되고, 검사와 실행 단계에서도 다시 막힙니다.
 - 소스는 읽기 전용 스냅샷 트랜잭션으로 읽고, `CASCADE`는 어디에서도 쓰지 않습니다.
 
 ## 로그

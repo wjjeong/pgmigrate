@@ -102,27 +102,27 @@ dev → qa → prd 순서로 배포할 때, 작은 테이블(공통코드, 설�
 - 결과 화면에 테이블별 소스/타깃 행 수, 소요 시간 표시
 
 ## 7. 안전 장치 [내 결정]
-- 접속 설정에 `env` 태그(dev / qa / prd 등). **타깃이 prd면 실행 전에 타깃 DB 이름을 직접 입력**해야 진행
+- 타깃은 항상 보호한다. **실행 전에 타깃 DB 이름을 정확히(대소문자 구분) 직접 입력**해야 진행 (y/n 확인은 없음)
 - create의 "DROP 후 재생성", truncate가 포함된 실행은 미리보기에서 빨간색으로 강조
 - 소스와 타깃이 같은 서버·포트·DB면 실행 거부
-- **"DROP 후 재생성"은 타깃 env가 prd면 사용 불가.** 다른 env에서는 기존 테이블의 GRANT/OWNER/트리거/RLS가 사라진다는 경고 표시. DROP은 CASCADE 없이 실행하므로 뷰나 다른 테이블의 FK가 의존하면 미리보기에서 오류 [내 결정]
+- **"DROP 후 재생성"은 타깃 설정에 `allow_drop: true`가 있을 때만 사용 가능** (테이블 선택 화면, 계획 검사, 실행 직전 세 곳에서 확인). 허용된 경우 기존 테이블의 GRANT/OWNER/트리거/RLS가 사라진다는 경고 표시. DROP은 CASCADE 없이 실행하므로 뷰나 다른 테이블의 FK가 의존하면 미리보기에서 오류 [내 결정]
 - truncate/append 시 타깃 테이블의 트리거는 끄지 않고 평소대로 실행됨. 트리거가 있으면 미리보기에 안내 표시 [내 결정]
-- env 방향(dev→qa→prd)은 강제하지 않음 [내 결정]
 - 미리보기에서 권한을 미리 확인: TRUNCATE/INSERT 권한, create 시 스키마 CREATE 권한, DROP 시 소유권, 시퀀스 UPDATE 권한 [내 결정]
 - 실행마다 로그 파일 생성: 시각, 소스/타깃, 테이블별 모드, 실행한 DDL/SQL, 행 수, 결과. 위치는 exe 옆 `logs/`
 
 ## 8. 화면 흐름
 
-1. **접속 선택**: 저장된 접속 목록에서 소스·타깃 선택 (env 태그 색상 표시). 비밀번호는 필요하면 입력
+1. **접속**: 설정 파일의 소스·타깃 요약(name, host:port/database, user, 타깃의 allow_drop 표시)을 보여 주고 두 비밀번호를 입력(비우면 PGPASSWORD/pgpass). 같은 DB면 연결하지 않음
 2. **테이블 선택**: 소스의 스키마/테이블 목록 (필터 검색, 체크박스, 테이블별 모드 지정, 소스 행 수 표시)
 3. **미리보기**: 실행 순서, 테이블별 모드·소스 행 수·타깃 현재 행 수, 생성될 DDL(펼쳐보기), 경고/오류 목록. 오류가 있으면 실행 불가
-4. **확인**: prd면 DB 이름 입력
+4. **확인**: 삭제될 테이블(TRUNCATE / DROP 후 재생성) 목록을 보여 주고, 항상 타깃 DB 이름 입력
 5. **실행/진행**: 테이블별 진행 상태
 6. **결과**: 성공/실패, 검증 결과, 로그 파일 경로
 
 ## 9. 접속 설정 [내 결정]
 - 설정 파일: exe 옆 `pgmigrate.yaml` (없으면 `%APPDATA%\pgmigrate\pgmigrate.yaml`)
-- 항목: name, env, host, port, database, user, sslmode
+- 형식: `source:`와 `target:` 두 섹션(각 하나). 항목: name(생략 시 source/target), host, port(기본 5432), database, user, sslmode(기본 prefer). 타깃만 `allow_drop`(기본 false) 사용, 소스의 allow_drop은 무시
+- 알 수 없는 항목(예전 `connections:` 목록, `env:`)은 오류
 - **비밀번호는 저장하지 않음**: 실행 시 입력, 또는 `PGPASSWORD`, `.pgpass`(`%APPDATA%\postgresql\pgpass.conf`) 사용
 - v1에서 접속 추가/수정은 설정 파일을 직접 편집 (TUI 편집 화면은 비목표)
 - 대상 스키마: 소스와 같은 스키마 이름. 타깃에 스키마가 없으면 오류
@@ -131,3 +131,6 @@ dev → qa → prd 순서로 배포할 때, 작은 테이블(공통코드, 설�
 - 패키지 구조, 내부 API, 라이브러리 세부 선택 (YAML 파서 등)
 - 화면 세부 레이아웃과 키 바인딩
 - 테스트 방식. 단, Docker의 PostgreSQL 18.4 두 인스턴스를 띄워 모드별 통합 테스트를 하는 것을 권장 (개발 PC에 Docker 있음)
+
+## 11. 변경 이력
+- 2026-10-21: dev/qa/prd env 모델 제거 → source/target 단일 접속, 타깃 항상 보호(DB 이름 입력), allow_drop

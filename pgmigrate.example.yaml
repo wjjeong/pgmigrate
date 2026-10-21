@@ -1,23 +1,17 @@
 # pgmigrate 연결 설정 예시. 비밀번호는 여기에 쓰지 않습니다 (실행 시 입력 또는 PGPASSWORD).
-connections:
-  - name: local-dev
-    env: dev
-    host: localhost
-    port: 5432
-    database: appdb
-    user: app
-    sslmode: prefer
-  - name: qa-server
-    env: qa
-    host: qa-db.example.com
-    port: 5432
-    database: appdb
-    user: app
-    sslmode: require
-  - name: prd-server
-    env: prd
-    host: prd-db.example.com
-    port: 5432
-    database: appdb
-    user: app_readonly
-    sslmode: require
+# 소스 하나, 타깃 하나만 둡니다. 타깃은 항상 보호됩니다 (실행 전 DB 이름 입력).
+source:
+  name: dev            # 화면 표시용 (생략하면 "source")
+  host: localhost
+  port: 5432           # 생략하면 5432
+  database: appdb
+  user: app
+  sslmode: prefer      # 생략하면 prefer
+target:
+  name: qa             # 화면 표시용 (생략하면 "target")
+  host: qa-db.example.com
+  port: 5432
+  database: appdb
+  user: app
+  sslmode: require
+  allow_drop: false    # true일 때만 DROP 후 재생성(DropRecreate)을 쓸 수 있습니다
