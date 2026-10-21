@@ -430,3 +430,21 @@ func TestRunScreen_CtrlCDuringCommitNotCancelled(t *testing.T) {
 	h.m.(*Model).run.cancel() // fake Execute를 끝낸다
 	h.settle()
 }
+
+func TestConfirm_ListsDestructiveTables(t *testing.T) {
+	p := simplePlan(connQA)
+	p.Steps = []plan.Step{
+		{Sel: plan.Selection{Ref: ref("a"), Mode: plan.ModeTruncate}},
+		{Sel: plan.Selection{Ref: ref("b"), Mode: plan.ModeCreate, DropRecreate: true}, Target: &catalog.Table{Ref: ref("b")}},
+		{Sel: plan.Selection{Ref: ref("c"), Mode: plan.ModeAppend}},
+		{Sel: plan.Selection{Ref: ref("d"), Mode: plan.ModeTruncate}},
+	}
+	f := &fakeBackend{tables: tableInfos("a"), plan: p}
+	h := newHarness(t, f, testConns)
+	toConfirm(h, 2)
+	h.mustContain("TRUNCATE: public.a, public.d")
+	h.mustContain("DROP 후 재생성: public.b")
+	if strings.Contains(h.view(), "public.c") {
+		t.Fatalf("append table listed as destructive:\n%s", h.view())
+	}
+}

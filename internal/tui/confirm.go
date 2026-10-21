@@ -72,6 +72,21 @@ func (m *Model) viewConfirm() string {
 	b.WriteString("테이블 " + strconv.Itoa(len(m.plan.Steps)) + "개를 타깃 " + envStyle(m.plan.Target.Env).Render(m.plan.Target.Database) + "에 마이그레이션합니다.\n")
 	if m.plan.HasDestructive() {
 		b.WriteString(errStyle.Render("타깃 데이터가 삭제됩니다.") + "\n")
+		var truncs, drops []string
+		for _, st := range m.plan.Steps {
+			switch {
+			case st.Sel.Mode == plan.ModeTruncate:
+				truncs = append(truncs, st.Sel.Ref.String())
+			case st.Sel.Mode == plan.ModeCreate && st.Sel.DropRecreate && st.Target != nil:
+				drops = append(drops, st.Sel.Ref.String())
+			}
+		}
+		if len(truncs) > 0 {
+			b.WriteString(errStyle.Render("  TRUNCATE: "+strings.Join(truncs, ", ")) + "\n")
+		}
+		if len(drops) > 0 {
+			b.WriteString(errStyle.Render("  DROP 후 재생성: "+strings.Join(drops, ", ")) + "\n")
+		}
 	}
 	b.WriteString("\n")
 	if s.prd {
