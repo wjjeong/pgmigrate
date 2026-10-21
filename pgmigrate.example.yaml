@@ -1,0 +1,23 @@
+# pgmigrate 연결 설정 예시. 비밀번호는 여기에 쓰지 않습니다 (실행 시 입력 또는 PGPASSWORD).
+connections:
+  - name: local-dev
+    env: dev
+    host: localhost
+    port: 5432
+    database: appdb
+    user: app
+    sslmode: prefer
+  - name: qa-server
+    env: qa
+    host: qa-db.example.com
+    port: 5432
+    database: appdb
+    user: app
+    sslmode: require
+  - name: prd-server
+    env: prd
+    host: prd-db.example.com
+    port: 5432
+    database: appdb
+    user: app_readonly
+    sslmode: require
