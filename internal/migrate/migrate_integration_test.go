@@ -242,7 +242,7 @@ func TestExecute_RefusesDropRecreateOnPrd(t *testing.T) {
 	if err == nil {
 		t.Fatal("오류를 기대했습니다")
 	}
-	if res == nil || res.Committed {
+	if res == nil || res.Committed || !res.Refused {
 		t.Errorf("Result: %+v", res)
 	}
 	if got := rows(t, e.tgt, e.sql(`SELECT id, old FROM S.t`)); !reflect.DeepEqual(got, []string{"7|x"}) {
@@ -530,10 +530,154 @@ func TestExecute_RefusesPlanWithErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("오류를 기대했습니다")
 	}
-	if res == nil || res.Committed {
+	if res == nil || res.Committed || !res.Refused {
 		t.Errorf("Result: %+v", res)
 	}
 	if got := rows(t, e.tgt, e.sql(`SELECT id FROM S.t`)); !reflect.DeepEqual(got, []string{"7"}) {
+		t.Errorf("타깃이 바뀌었습니다: %q", got)
+	}
+}
+
+// TestExecute_VerifyMismatchRollsBack: 타깃 트리거가 복사된 행을 지워 행 수가
+// 맞지 않으면 검증 단계에서 실패하고 전체가 롤백되어야 한다 (F4).
+func TestExecute_VerifyMismatchRollsBack(t *testing.T) {
+	for _, mode := range []plan.Mode{plan.ModeTruncate, plan.ModeAppend} {
+		t.Run(string(mode), func(t *testing.T) {
+			e := setup(t)
+			e.onSrc(t, `CREATE TABLE S.t (id int PRIMARY KEY)`, `INSERT INTO S.t VALUES (1), (2), (3)`)
+			e.onTgt(t,
+				`CREATE TABLE S.t (id int PRIMARY KEY)`,
+				`INSERT INTO S.t VALUES (10), (11)`,
+				`CREATE FUNCTION S.drop2() RETURNS trigger LANGUAGE plpgsql AS $$
+				 BEGIN DELETE FROM `+pgx.Identifier{e.s}.Sanitize()+`.t WHERE id = 2; RETURN NULL; END $$`,
+				`CREATE TRIGGER drop2 AFTER INSERT ON S.t FOR EACH ROW EXECUTE FUNCTION S.drop2()`,
+			)
+			p := e.mustPlan(t, e.sel(mode, false, "t")...)
+			res, err := run(context.Background(), e, p, Options{}, nil)
+			if err == nil || !strings.Contains(err.Error(), string(PhaseVerify)) {
+				t.Fatalf("검증 단계 오류를 기대했습니다: %v", err)
+			}
+			if res == nil || res.Committed || res.CommitUnknown || res.Refused {
+				t.Errorf("Result: %+v", res)
+			}
+			if got := rows(t, fresh(t), e.sql(`SELECT id FROM S.t ORDER BY id`)); !reflect.DeepEqual(got, []string{"10", "11"}) {
+				t.Errorf("타깃이 바뀌었습니다: %q", got)
+			}
+		})
+	}
+}
+
+// TestExecute_SourceLockTimeout: 소스 테이블이 다른 세션에 잠겨 있으면 소스 COPY도
+// lock_timeout으로 곧 실패해야 한다 (M2). 타깃 잠금을 쥔 채 무한정 기다리지 않는다.
+func TestExecute_SourceLockTimeout(t *testing.T) {
+	e := setup(t)
+	e.onSrc(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (1)`)
+	e.onTgt(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (7), (8)`)
+	p := e.mustPlan(t, e.sel(plan.ModeTruncate, false, "t")...)
+
+	locker := testutil.Source(t)
+	testutil.MustExec(t, locker, "BEGIN")
+	testutil.MustExec(t, locker, e.sql(`LOCK TABLE S.t IN ACCESS EXCLUSIVE MODE`))
+	defer testutil.MustExec(t, locker, "ROLLBACK")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := run(ctx, e, p, Options{LockTimeout: 300 * time.Millisecond}, nil)
+	elapsed := time.Since(start)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("소스 lock_timeout 오류를 기대했습니다 (%v 경과): %v", elapsed, err)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("너무 오래 걸렸습니다: %v", elapsed)
+	}
+	if res == nil || res.Committed || res.CommitUnknown {
+		t.Errorf("Result: %+v", res)
+	}
+	if got := rows(t, fresh(t), e.sql(`SELECT id FROM S.t ORDER BY id`)); !reflect.DeepEqual(got, []string{"7", "8"}) {
+		t.Errorf("타깃이 바뀌었습니다: %q", got)
+	}
+}
+
+// TestExecute_CancelBeforeCommitRollsBack: 마지막 DB 작업 뒤, COMMIT 직전에 취소되면
+// 커밋하지 않는다 (F1). 시퀀스가 없어 PhaseSequence 뒤에는 DB 호출이 없다.
+func TestExecute_CancelBeforeCommitRollsBack(t *testing.T) {
+	e := setup(t)
+	e.onSrc(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (1), (2), (3)`)
+	e.onTgt(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (7), (8)`)
+	p := e.mustPlan(t, e.sel(plan.ModeTruncate, false, "t")...)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var phases []Phase
+	res, err := run(ctx, e, p, Options{}, func(ev Event) {
+		phases = append(phases, ev.Phase)
+		if ev.Phase == PhaseSequence {
+			cancel()
+		}
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("context.Canceled를 기대했습니다: %v", err)
+	}
+	if res == nil || res.Committed || res.CommitUnknown || res.Refused {
+		t.Errorf("Result: %+v", res)
+	}
+	for _, ph := range phases {
+		if ph == PhaseCommit {
+			t.Fatalf("취소 후 커밋 단계에 들어갔습니다: %v", phases)
+		}
+	}
+	if got := rows(t, fresh(t), e.sql(`SELECT id FROM S.t ORDER BY id`)); !reflect.DeepEqual(got, []string{"7", "8"}) {
+		t.Errorf("타깃이 바뀌었습니다: %q", got)
+	}
+}
+
+// TestExecute_CancelDuringCommitIgnored: 커밋 단계가 시작된 뒤의 취소는 적용되지
+// 않고, 결과는 실제로 일어난 일(커밋)을 보고한다 (F1).
+func TestExecute_CancelDuringCommitIgnored(t *testing.T) {
+	e := setup(t)
+	e.onSrc(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (1), (2), (3)`)
+	e.onTgt(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (7), (8)`)
+	p := e.mustPlan(t, e.sel(plan.ModeTruncate, false, "t")...)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	res, err := run(ctx, e, p, Options{}, func(ev Event) {
+		if ev.Phase == PhaseCommit {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res == nil || !res.Committed || res.CommitUnknown {
+		t.Errorf("Result: %+v", res)
+	}
+	if got := rows(t, fresh(t), e.sql(`SELECT id FROM S.t ORDER BY id`)); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
+		t.Errorf("타깃 데이터: %q", got)
+	}
+}
+
+// TestExecute_CommitErrorIsDefiniteRollback: COMMIT 시점의 서버 오류(지연 제약 위반)는
+// 확실한 롤백으로 보고된다 (F1).
+func TestExecute_CommitErrorIsDefiniteRollback(t *testing.T) {
+	e := setup(t)
+	e.onSrc(t, `CREATE TABLE S.t (id int)`, `INSERT INTO S.t VALUES (1), (2)`)
+	e.onTgt(t,
+		`CREATE TABLE S.t (id int, CONSTRAINT t_id_key UNIQUE (id) DEFERRABLE INITIALLY DEFERRED)`,
+		`INSERT INTO S.t VALUES (2), (9)`,
+	)
+	p := e.mustPlan(t, e.sel(plan.ModeAppend, false, "t")...)
+	res, err := run(context.Background(), e, p, Options{}, nil)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" || !strings.Contains(err.Error(), string(PhaseCommit)) {
+		t.Fatalf("커밋 단계의 23505 오류를 기대했습니다: %v", err)
+	}
+	if res == nil || res.Committed || res.CommitUnknown {
+		t.Errorf("Result: %+v", res)
+	}
+	if got := rows(t, fresh(t), e.sql(`SELECT id FROM S.t ORDER BY id`)); !reflect.DeepEqual(got, []string{"2", "9"}) {
 		t.Errorf("타깃이 바뀌었습니다: %q", got)
 	}
 }

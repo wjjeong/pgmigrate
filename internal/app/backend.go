@@ -148,13 +148,13 @@ func (b *pgBackend) Execute(ctx context.Context, p *plan.Plan, onEvent func(migr
 	// 실행마다 새 연결을 연다 (Ruling 11).
 	s, err := dial(ctx, b.src, b.srcPass, "소스")
 	if err != nil {
-		lf.Printf("실패: %v", err)
+		writeOutcome(lf, nil, err)
 		return nil, path, err
 	}
 	defer closeConn(s)
 	t, err := dial(ctx, b.tgt, b.tgtPass, "타깃")
 	if err != nil {
-		lf.Printf("실패: %v", err)
+		writeOutcome(lf, nil, err)
 		return nil, path, err
 	}
 	defer closeConn(t)
@@ -166,15 +166,18 @@ func (b *pgBackend) Execute(ctx context.Context, p *plan.Plan, onEvent func(migr
 				tr.Ref, tr.Mode, tr.SourceRows, tr.Before, tr.After, tr.Duration)
 		}
 	}
-	switch {
-	case err != nil:
-		lf.Printf("최종 결과: 실패 (롤백됨): %v", err)
-	case res != nil && res.Committed:
-		lf.Printf("최종 결과: 커밋 완료")
-	default:
-		lf.Printf("최종 결과: 커밋되지 않음")
-	}
+	writeOutcome(lf, res, err)
 	return res, path, err
+}
+
+// writeOutcome logs the final line: committed, refused before any change,
+// rolled back, or commit outcome unknown (never "rolled back" unless it was).
+func writeOutcome(l runlog.Logger, res *migrate.Result, err error) {
+	if err != nil {
+		l.Printf("최종 결과: %s: %v", res.Outcome(), err)
+		return
+	}
+	l.Printf("최종 결과: %s", res.Outcome())
 }
 
 func (b *pgBackend) Close() {

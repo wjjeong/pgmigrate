@@ -334,7 +334,7 @@ func TestRunScreen_CtrlCCancels(t *testing.T) {
 	if f.execCtx == nil || f.execCtx.Err() == nil {
 		t.Fatal("execute context was not cancelled")
 	}
-	h.mustContain("커밋되지 않음")
+	h.mustContain("롤백됨")
 	h.mustContain("context canceled")
 	h.press("q")
 	if !h.quit {
@@ -357,12 +357,12 @@ func TestResult_ShowsLogPath(t *testing.T) {
 
 func TestResult_ShowsError(t *testing.T) {
 	f := &fakeBackend{tables: tableInfos("a"), plan: simplePlan(connQA),
-		execErr: errors.New("복사 실패"), logPath: "run.log"}
+		result: &migrate.Result{}, execErr: errors.New("복사 실패"), logPath: "run.log"}
 	h := newHarness(t, f, testConns)
 	toConfirm(h, 2)
 	h.press("y")
 	h.mustContain("복사 실패")
-	h.mustContain("커밋되지 않음")
+	h.mustContain("롤백됨")
 }
 
 func TestEnvStyle_PrdAliasesRed(t *testing.T) {
@@ -374,4 +374,59 @@ func TestEnvStyle_PrdAliasesRed(t *testing.T) {
 	if got := envStyle("dev").GetForeground(); got == colorRed {
 		t.Error("dev must not be red")
 	}
+}
+
+func TestResult_OutcomeWording(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		res       *migrate.Result
+		err       error
+		want, not string
+	}{
+		{"refused", &migrate.Result{Refused: true}, errors.New("계획에 오류"), "실행 전 거부 (변경 없음)", "롤백"},
+		{"unknown", &migrate.Result{CommitUnknown: true}, errors.New("unexpected EOF"), "커밋 여부 불명확", "롤백"},
+		{"rolled back", &migrate.Result{}, errors.New("복사 실패"), "롤백됨", "커밋 완료"},
+		{"not run", nil, errors.New("연결 실패"), "실행되지 않음 (변경 없음)", "롤백"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeBackend{tables: tableInfos("a"), plan: simplePlan(connQA),
+				result: tc.res, execErr: tc.err, logPath: "run.log"}
+			h := newHarness(t, f, testConns)
+			toConfirm(h, 2)
+			h.press("y")
+			h.mustContain(tc.want)
+			if strings.Contains(h.view(), tc.not) {
+				t.Fatalf("view contains %q:\n%s", tc.not, h.view())
+			}
+		})
+	}
+}
+
+func TestRunScreen_CtrlCDuringCommitNotCancelled(t *testing.T) {
+	r := ref("a")
+	f := &fakeBackend{tables: tableInfos("a"), plan: simplePlan(connQA), blockExec: true,
+		logPath: "run.log",
+		events: []migrate.Event{{Phase: migrate.PhaseStart}, {Table: &r, Phase: migrate.PhaseCopy},
+			{Table: &r, Phase: migrate.PhaseVerify}, {Phase: migrate.PhaseCommit}}}
+	h := newHarness(t, f, testConns)
+	toConfirm(h, 2)
+	h.press("y")
+	h.mustContain("커밋")
+	h.update(key("ctrl+c"))
+	h.settle()
+	if h.quit {
+		t.Fatal("ctrl+c quit during run")
+	}
+	h.mustContain("커밋 중에는 취소할 수 없습니다")
+	if strings.Contains(h.view(), "취소 중") {
+		t.Fatalf("cancelling shown during commit:\n%s", h.view())
+	}
+	f.mu.Lock()
+	ctx := f.execCtx
+	f.mu.Unlock()
+	if ctx == nil || ctx.Err() != nil {
+		t.Fatal("execute context must not be cancelled once commit started")
+	}
+	h.m.(*Model).run.cancel() // fake Execute를 끝낸다
+	h.settle()
 }

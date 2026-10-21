@@ -42,6 +42,8 @@ type runState struct {
 	phase      []migrate.Phase // 테이블별 마지막 단계
 	global     migrate.Phase
 	cancelling bool
+	committing bool // PhaseCommit 이후: 더 이상 취소할 수 없다
+	noCancel   bool // 커밋 중에 Ctrl+C를 눌렀다
 }
 
 // runEventMsg carries one migrate.Event from the Execute goroutine.
@@ -86,7 +88,12 @@ func (m *Model) updateRun(msg tea.Msg) tea.Cmd {
 		m.result = resultState{res: msg.res, logPath: msg.logPath, err: msg.err}
 		m.screen = screenResult
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" && !s.cancelling {
+		if msg.String() != "ctrl+c" || s.cancelling {
+			return nil
+		}
+		if s.committing {
+			s.noCancel = true // 커밋은 이미 서버로 보냈으므로 취소를 보내지 않는다
+		} else {
 			s.cancelling = true
 			s.cancel() // 결과(runDoneMsg)가 올 때까지 기다린다
 		}
@@ -98,6 +105,9 @@ func (m *Model) applyEvent(e migrate.Event) {
 	s := &m.run
 	if e.Table == nil {
 		s.global = e.Phase
+		if e.Phase == migrate.PhaseCommit {
+			s.committing = true
+		}
 		for i, st := range s.status {
 			switch {
 			case e.Phase == migrate.PhaseFailed && st == statusRunning:
@@ -150,9 +160,14 @@ func (m *Model) viewRun() string {
 		b.WriteString(fmt.Sprintf("  %s  %s %-8s%s\n", label, pad(st.Sel.Ref.String(), 30), st.Sel.Mode, detail))
 	}
 	b.WriteString("\n")
-	if s.cancelling {
+	switch {
+	case s.cancelling:
 		b.WriteString(warnStyle.Render("취소 중… 롤백이 끝날 때까지 기다립니다") + "\n")
-	} else {
+	case s.noCancel:
+		b.WriteString(warnStyle.Render("커밋 중에는 취소할 수 없습니다. 결과를 기다립니다") + "\n")
+	case s.committing:
+		b.WriteString(helpStyle.Render("커밋 중… (취소할 수 없습니다)") + "\n")
+	default:
 		b.WriteString(helpStyle.Render("Ctrl+C 취소 (전체 롤백)") + "\n")
 	}
 	return b.String()

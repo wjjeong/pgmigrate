@@ -25,6 +25,9 @@ type Options struct{ LockTimeout time.Duration } // 0이면 10s
 
 const defaultLockTimeout = 10 * time.Second
 
+// commitTimeout bounds COMMIT, which is not cancellable once sent.
+const commitTimeout = 60 * time.Second
+
 // Phase names a stage of Execute, reported through Event.
 type Phase string
 
@@ -56,10 +59,41 @@ type TableResult struct {
 	Duration                  time.Duration
 }
 
-// Result is the outcome of Execute.
+// Result is the outcome of Execute. At most one of Committed, Refused and
+// CommitUnknown is true; none of them means the target was rolled back.
 type Result struct {
 	Tables    []TableResult
 	Committed bool
+	// Refused: Execute refused before touching any database (no changes).
+	Refused bool
+	// CommitUnknown: COMMIT was sent but its outcome is unknown (e.g. the
+	// connection was lost); the target may or may not have committed.
+	CommitUnknown bool
+}
+
+// Outcome returns the Korean label of the result shown in the UI and the log.
+// A nil Result means Execute never ran (no changes).
+func (r *Result) Outcome() string {
+	switch {
+	case r == nil:
+		return "실행되지 않음 (변경 없음)"
+	case r.Committed:
+		return "커밋 완료"
+	case r.Refused:
+		return "실행 전 거부 (변경 없음)"
+	case r.CommitUnknown:
+		return "커밋 여부 불명확 — 타깃 DB를 직접 확인하세요"
+	}
+	return "롤백됨"
+}
+
+// commitOutcomeUnknown reports whether a COMMIT error leaves the outcome
+// unknown. A server error or a COMMIT answered with ROLLBACK means the
+// transaction was definitely rolled back; anything else (connection loss,
+// timeout, ...) may have happened after the server committed.
+func commitOutcomeUnknown(err error) bool {
+	var pgErr *pgconn.PgError
+	return !errors.As(err, &pgErr) && !errors.Is(err, pgx.ErrTxCommitRollback)
 }
 
 // copySelectSQL returns the source query whose rows are copied for s.
@@ -102,7 +136,10 @@ func fail(ref *catalog.TableRef, phase Phase, err error) *stepError {
 }
 
 // Execute runs p. On failure it rolls back both transactions and returns a
-// non-nil Result (Committed=false) together with the error.
+// non-nil Result (Committed=false) together with the error; Refused is set when
+// it refused before touching any database, CommitUnknown when COMMIT failed in
+// a way that leaves the outcome unknown. ctx cancellation is honoured only
+// until COMMIT is sent.
 func Execute(ctx context.Context, src, tgt *pgx.Conn, p *plan.Plan, opt Options, log runlog.Logger, onEvent func(Event)) (*Result, error) {
 	if log == nil {
 		log = runlog.Discard()
@@ -127,6 +164,7 @@ func Execute(ctx context.Context, src, tgt *pgx.Conn, p *plan.Plan, opt Options,
 		}
 	}
 	if refuse != nil {
+		r.res.Refused = true
 		log.Printf("실행 거부: %v", refuse)
 		r.emit(Event{Phase: PhaseFailed, Err: refuse})
 		return r.res, refuse
@@ -144,8 +182,9 @@ func Execute(ctx context.Context, src, tgt *pgx.Conn, p *plan.Plan, opt Options,
 // abort rolls back both sides and reports the wrapped error.
 func (r *runner) abort(se *stepError) error {
 	err := se.err
-	if cerr := r.ctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+	if cerr := r.ctx.Err(); cerr != nil && se.phase != PhaseCommit && !errors.Is(err, cerr) {
 		// 취소 중에 서버가 돌려준 오류(57014 등)도 취소로 판별되게 한다.
+		// COMMIT은 취소되지 않으므로 그 오류에는 붙이지 않는다.
 		err = fmt.Errorf("%w: %w", cerr, err)
 	}
 	if se.ref != nil {
@@ -223,6 +262,12 @@ func (r *runner) run(p *plan.Plan, opt Options) *stepError {
 		return fail(nil, PhaseStart, fmt.Errorf("소스 트랜잭션 시작 실패: %w", err))
 	}
 	r.srcTx = tx
+	// 소스 COPY도 잠금을 무한정 기다리지 않게 한다 (그동안 타깃 잠금을 쥐고 있다).
+	lockSQL := fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", ms)
+	r.log.Printf("[소스] %s", lockSQL)
+	if _, err := r.srcTx.Exec(r.ctx, lockSQL); err != nil {
+		return fail(nil, PhaseStart, err)
+	}
 
 	// 3. 타깃: 하나의 트랜잭션.
 	r.log.Printf("[타깃] BEGIN")
@@ -231,7 +276,7 @@ func (r *runner) run(p *plan.Plan, opt Options) *stepError {
 	}
 	r.tgtTx = tx
 	for _, sql := range []string{
-		fmt.Sprintf("SET LOCAL lock_timeout = '%dms'", ms),
+		lockSQL,
 		"SET LOCAL standard_conforming_strings = on", // ddl의 문자열 리터럴이 이 설정에 의존한다.
 	} {
 		if err := r.tgtExec(sql); err != nil {
@@ -357,13 +402,24 @@ func (r *runner) run(p *plan.Plan, opt Options) *stepError {
 		}
 	}
 
-	// 12. 커밋.
-	r.emit(Event{Phase: PhaseCommit})
-	r.log.Printf("[타깃] COMMIT")
-	if err := r.tgtTx.Commit(r.ctx); err != nil {
+	// 12. 커밋. 여기까지 취소되지 않았다면 이후의 취소는 적용하지 않는다:
+	// 커밋 도중에 끊으면 서버는 커밋했는데 결과를 모르는 상태가 될 수 있다.
+	if err := r.ctx.Err(); err != nil {
 		return fail(nil, PhaseCommit, err)
 	}
-	r.tgtTx = nil
+	r.emit(Event{Phase: PhaseCommit})
+	r.log.Printf("[타깃] COMMIT")
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(r.ctx), commitTimeout)
+	err = r.tgtTx.Commit(cctx)
+	cancel()
+	r.tgtTx = nil // 성공 여부와 관계없이 트랜잭션은 끝났다 (다시 ROLLBACK하지 않는다).
+	if err != nil {
+		if commitOutcomeUnknown(err) {
+			r.res.CommitUnknown = true
+			return fail(nil, PhaseCommit, fmt.Errorf("커밋 여부 불명확 — 타깃 DB를 직접 확인하세요: %w", err))
+		}
+		return fail(nil, PhaseCommit, fmt.Errorf("커밋 실패 (롤백됨): %w", err))
+	}
 	r.res.Committed = true
 	r.log.Printf("[소스] ROLLBACK")
 	if err := r.srcTx.Rollback(context.Background()); err != nil {

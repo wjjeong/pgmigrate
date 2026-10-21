@@ -27,11 +27,14 @@ func (m *Model) viewResult() string {
 	s := &m.result
 	var b strings.Builder
 	b.WriteString(m.header("결과"))
-	if s.res != nil && s.res.Committed {
-		b.WriteString(okStyle.Render("커밋 완료") + "\n\n")
-	} else {
-		b.WriteString(errStyle.Render("커밋되지 않음 (롤백)") + "\n\n")
+	style := errStyle
+	switch {
+	case s.res != nil && s.res.Committed:
+		style = okStyle
+	case s.res == nil || s.res.Refused || s.res.CommitUnknown:
+		style = warnStyle
 	}
+	b.WriteString(style.Render(s.res.Outcome()) + "\n\n")
 	if s.res != nil && len(s.res.Tables) > 0 {
 		b.WriteString("  " + pad("테이블", 28) + " " + pad("모드", 8) + " " + strings.Join([]string{padLeft("소스", 9), padLeft("이전", 9), padLeft("이후", 9), padLeft("시간", 8)}, " ") + "\n")
 		for _, t := range s.res.Tables {
