@@ -71,8 +71,50 @@ func (b *pgBackend) Connect(ctx context.Context, src, tgt config.Conn, srcPasswo
 		closeConn(s)
 		return err
 	}
+	// 호스트 표기(localhost/127.0.0.1, 별칭 등)가 달라도 같은 DB면 거부한다.
+	same, err := sameServerDatabase(ctx, s, t)
+	if err == nil && same {
+		err = errors.New("소스와 타깃이 같은 데이터베이스입니다 (서버 식별자, 데이터베이스 이름, 서버 시작 시각이 모두 같음)")
+	}
+	if err != nil {
+		closeConn(s)
+		closeConn(t)
+		return err
+	}
 	b.src, b.tgt, b.srcPass, b.tgtPass, b.srcDB, b.tgtDB = src, tgt, srcPassword, tgtPassword, s, t
 	return nil
+}
+
+// identitySQL identifies the cluster and database a connection points at.
+const identitySQL = `SELECT (SELECT system_identifier FROM pg_catalog.pg_control_system()),
+       pg_catalog.current_database(), pg_catalog.pg_postmaster_start_time()`
+
+type dbIdentity struct {
+	sysID   int64
+	db      string
+	started time.Time
+}
+
+func identify(ctx context.Context, c *pgx.Conn, role string) (dbIdentity, error) {
+	var id dbIdentity
+	if err := c.QueryRow(ctx, identitySQL).Scan(&id.sysID, &id.db, &id.started); err != nil {
+		return id, fmt.Errorf("%s 서버 식별 정보 조회 실패: %w", role, err)
+	}
+	return id, nil
+}
+
+// sameServerDatabase reports whether s and t are connected to the same
+// database of the same running server.
+func sameServerDatabase(ctx context.Context, s, t *pgx.Conn) (bool, error) {
+	a, err := identify(ctx, s, "소스")
+	if err != nil {
+		return false, err
+	}
+	b, err := identify(ctx, t, "타깃")
+	if err != nil {
+		return false, err
+	}
+	return a.sysID == b.sysID && a.db == b.db && a.started.Equal(b.started), nil
 }
 
 var errNotConnected = errors.New("연결되어 있지 않습니다")

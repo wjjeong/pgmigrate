@@ -110,3 +110,27 @@ func TestBackend_ConnectFailureClosesFirst(t *testing.T) {
 		t.Fatal("실패한 Connect 후에는 연결이 없어야 합니다")
 	}
 }
+
+// TestBackend_SameServerDifferentSpellingRefused: 호스트 표기만 다른 같은 DB는
+// 문자열 비교를 통과하지만 서버 식별 정보 비교로 거부되어야 한다 (F2).
+func TestBackend_SameServerDifferentSpellingRefused(t *testing.T) {
+	sc, tc := conns()
+	alias := sc
+	alias.Name, alias.Host = "src-ip", "127.0.0.1"
+	if config.SameDatabase(sc, alias) {
+		t.Fatal("문자열 사전 검사가 이미 같다고 판단합니다; 테스트 전제가 깨졌습니다")
+	}
+	b := NewPG(t.TempDir(), migrate.Options{})
+	defer b.Close()
+	err := b.Connect(context.Background(), sc, alias, testPass, testPass)
+	if err == nil || !strings.Contains(err.Error(), "같은 데이터베이스") {
+		t.Fatalf("같은 DB 거부 오류가 필요합니다: %v", err)
+	}
+	if _, err := b.ListTables(context.Background()); err == nil {
+		t.Fatal("거부된 Connect 후에는 연결이 없어야 합니다")
+	}
+	// 다른 서버의 DB는 허용된다.
+	if err := b.Connect(context.Background(), sc, tc, testPass, testPass); err != nil {
+		t.Fatal(err)
+	}
+}
