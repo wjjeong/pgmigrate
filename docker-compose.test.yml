@@ -1,0 +1,13 @@
+services:
+  src:
+    image: postgres:18.4
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "55432:5432"
+  tgt:
+    image: postgres:18.4
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "55433:5432"
