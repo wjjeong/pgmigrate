@@ -63,19 +63,18 @@ func Check(src, tgt config.Conn, sel []Selection, f *Facts) *Plan {
 		refs = append(refs, s.Ref)
 	}
 	c := &checker{tgt: tgt, add: add}
-	outside := func(in []catalog.TableRef) []catalog.TableRef {
+	byRef := map[catalog.TableRef]Selection{}
+	for _, s := range sel {
+		byRef[s.Ref] = s
+	}
+	outside := func(in []catalog.TableRef, ok func(Selection) bool) []catalog.TableRef {
 		var out []catalog.TableRef
 		for _, r := range in {
-			if !inSel[r] {
+			if sl, found := byRef[r]; !found || !ok(sl) {
 				out = append(out, r)
 			}
 		}
 		return out
-	}
-
-	byRef := map[catalog.TableRef]Selection{}
-	for _, s := range sel {
-		byRef[s.Ref] = s
 	}
 	ordered, err := Order(f.Source, refs)
 	if err != nil { // R16
@@ -108,7 +107,7 @@ type checker struct {
 	add func(ref *catalog.TableRef, sev Severity, format string, a ...any)
 }
 
-type outsideFn func([]catalog.TableRef) []catalog.TableRef
+type outsideFn func([]catalog.TableRef, func(Selection) bool) []catalog.TableRef
 
 func (c *checker) table(st *Step, tf *TargetFacts, outside outsideFn) {
 	s := st.Sel
@@ -131,6 +130,9 @@ func (c *checker) table(st *Step, tf *TargetFacts, outside outsideFn) {
 		add(&ref, SevError, "%s: 타깃에 스키마 %s이(가) 없습니다", ref, ref.Schema)
 	}
 
+	if s.DropRecreate && s.Mode != ModeCreate {
+		add(&ref, SevError, "%s: DROP 후 재생성은 새로 만들기 모드에서만 선택할 수 있습니다", ref)
+	}
 	switch s.Mode {
 	case ModeCreate:
 		c.create(st, tf, outside)
@@ -143,20 +145,21 @@ func (c *checker) create(st *Step, tf *TargetFacts, outside outsideFn) {
 	s, src := st.Sel, st.Source
 	ref := s.Ref
 	add := c.add
+	if s.DropRecreate && c.tgt.IsPrd() { // R5
+		add(&ref, SevError, "%s: 운영(prd) 타깃에서는 DROP 후 재생성을 할 수 없습니다", ref)
+	}
 	if tf.Table != nil {
 		if !s.DropRecreate { // R4
 			add(&ref, SevError, "%s: 타깃에 이미 테이블이 있습니다 (DROP 후 재생성을 선택해야 합니다)", ref)
 			return
 		}
-		if c.tgt.IsPrd() { // R5
-			add(&ref, SevError, "%s: 운영(prd) 타깃에서는 DROP 후 재생성을 할 수 없습니다", ref)
-		} else { // R6
+		if !c.tgt.IsPrd() { // R6
 			add(&ref, SevWarning, "%s: DROP 후 재생성하면 기존 GRANT, OWNER, 트리거, RLS 설정이 사라집니다", ref)
 			if len(tf.DependentViews) > 0 {
 				add(&ref, SevError, "%s: 이 테이블에 의존하는 뷰가 있어 DROP할 수 없습니다 (%s)", ref, refList(tf.DependentViews))
 			}
-			if out := outside(tf.ReferencedBy); len(out) > 0 {
-				add(&ref, SevError, "%s: 선택하지 않은 테이블이 이 테이블을 FK로 참조합니다 (%s)", ref, refList(out))
+			if out := outside(tf.ReferencedBy, func(o Selection) bool { return o.Mode == ModeCreate && o.DropRecreate }); len(out) > 0 {
+				add(&ref, SevError, "%s: DROP 후 재생성 대상이 아닌 테이블이 이 테이블을 FK로 참조합니다 (%s)", ref, refList(out))
 			}
 			if !tf.Priv.Owner {
 				add(&ref, SevError, "%s: DROP하려면 테이블 소유자 권한이 필요합니다", ref)
@@ -203,8 +206,8 @@ func (c *checker) load(st *Step, tf *TargetFacts, outside outsideFn) {
 		add(&ref, SevError, "%s: %s", ref, pr)
 	}
 	if s.Mode == ModeTruncate {
-		if out := outside(tf.ReferencedBy); len(out) > 0 { // R12
-			add(&ref, SevError, "%s: 선택하지 않은 테이블이 이 테이블을 FK로 참조하여 TRUNCATE할 수 없습니다 (%s)", ref, refList(out))
+		if out := outside(tf.ReferencedBy, func(o Selection) bool { return o.Mode == ModeTruncate }); len(out) > 0 { // R12
+			add(&ref, SevError, "%s: 함께 TRUNCATE하지 않는 테이블이 이 테이블을 FK로 참조하여 TRUNCATE할 수 없습니다 (%s)", ref, refList(out))
 		}
 		if !tf.Priv.Truncate { // R13
 			add(&ref, SevError, "%s: 타깃 테이블에 TRUNCATE 권한이 없습니다", ref)

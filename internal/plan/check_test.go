@@ -112,6 +112,8 @@ func TestCheck_R5(t *testing.T) {
 	prd.Env = "prd"
 	p := Check(srcConn, prd, []Selection{{Ref: tref("a"), Mode: ModeCreate, DropRecreate: true}}, facts("a"))
 	has(t, p, SevError, "prd")
+	p = Check(srcConn, prd, []Selection{{Ref: tref("a"), Mode: ModeCreate, DropRecreate: true}}, createFacts())
+	has(t, p, SevError, "prd")
 }
 
 func TestCheck_R6(t *testing.T) {
@@ -132,9 +134,12 @@ func TestCheck_R6(t *testing.T) {
 	f = facts("a", "b")
 	f.Target[tref("a")].ReferencedBy = []catalog.TableRef{tref("b")}
 	has(t, run(f, s), SevError, "FK로 참조", "s.b")
-	// referencing table inside the selection is fine
-	if p := run(f, s, sel(ModeAppend, "b")); p.HasErrors() {
-		t.Errorf("in-selection reference must not error: %+v", p.Issues)
+	// referencing table inside the selection: OK only if also drop+recreate
+	if p := run(f, s, sel(ModeAppend, "b")); !p.HasErrors() {
+		t.Error("append of referencing table must error")
+	}
+	if p := run(f, s, Selection{Ref: tref("b"), Mode: ModeCreate, DropRecreate: true}); errorCount(p) != 0 {
+		t.Errorf("drop+recreate of referencing table is OK: %+v", p.Issues)
 	}
 
 	f = facts("a")
@@ -204,6 +209,11 @@ func TestCheck_R12(t *testing.T) {
 	if errorCount(p) != 1 {
 		t.Errorf("only the outside table should error: %+v", p.Issues)
 	}
+	f.Target[tref("a")].ReferencedBy = []catalog.TableRef{tref("b")}
+	if p := run(f, sel(ModeTruncate, "a"), sel(ModeTruncate, "b")); p.HasErrors() {
+		t.Errorf("co-truncated referencing table is OK: %+v", p.Issues)
+	}
+	has(t, run(f, sel(ModeTruncate, "a"), sel(ModeAppend, "b")), SevError, "s.b")
 	if p := run(f, sel(ModeAppend, "a")); p.HasErrors() {
 		t.Errorf("append ignores referencing tables: %+v", p.Issues)
 	}
@@ -306,5 +316,16 @@ func TestCheck_HappyPath(t *testing.T) {
 	}
 	if len(p.Steps[0].DDL) != 0 {
 		t.Error("no DDL outside create mode")
+	}
+}
+
+func TestCheck_DropRecreateOnlyForCreate(t *testing.T) {
+	for _, m := range []Mode{ModeTruncate, ModeAppend} {
+		p := run(facts("a"), Selection{Ref: tref("a"), Mode: m, DropRecreate: true})
+		has(t, p, SevError, "DROP 후 재생성")
+	}
+	p := &Plan{Steps: []Step{{Sel: Selection{Mode: ModeAppend, DropRecreate: true}}}}
+	if p.HasDestructive() {
+		t.Error("DropRecreate without create mode is not destructive")
 	}
 }

@@ -70,7 +70,7 @@ func (p *Plan) HasErrors() bool {
 // HasDestructive reports whether any step truncates or drops a target table.
 func (p *Plan) HasDestructive() bool {
 	for _, s := range p.Steps {
-		if s.Sel.Mode == ModeTruncate || s.Sel.DropRecreate {
+		if s.Sel.Mode == ModeTruncate || (s.Sel.Mode == ModeCreate && s.Sel.DropRecreate) {
 			return true
 		}
 	}
