@@ -200,3 +200,13 @@ func TestSameDatabase(t *testing.T) {
 		t.Fatal("db")
 	}
 }
+
+func TestLoad_ExampleFile(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "pgmigrate.example.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Source.Name != "dev" || cfg.Target.Name != "qa" || cfg.Target.AllowDrop {
+		t.Fatalf("unexpected: %+v", cfg)
+	}
+}
